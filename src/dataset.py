@@ -32,6 +32,6 @@ class RockDataset(Dataset):
             image = augmented["image"]
             mask = augmented["mask"]
 
-        mask = torch.tensor(mask, dtype=torch.uint8)
+        mask = mask.clone().detach()
 
         return image, mask

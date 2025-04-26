@@ -3,3 +3,10 @@ __pycache__/
 data/
 
 *.csv
+*.png
+*.jpg
+*.jpeg
+
+*.pth
+*.pt
+*.onnx
