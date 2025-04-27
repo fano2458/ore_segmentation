@@ -1,11 +1,13 @@
 __pycache__/
 
 data/
+wandb/
 
 *.csv
 *.png
 *.jpg
 *.jpeg
+*.txt
 
 *.pth
 *.pt

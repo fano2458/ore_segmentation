@@ -10,6 +10,6 @@ with open(csv_file, mode="r") as file:
 
 models = sorted(models, key=lambda x: x["FLOPs"])
 
-print("Top 30 Fastest Models (Based on FLOPs):")
-for i, model in enumerate(models[:30], start=1):
+print("Top 10 Fastest Models (Based on FLOPs):")
+for i, model in enumerate(models[:], start=1):
     print(f"{i}. {model['Model Name']} - FLOPs: {model['FLOPs']}")

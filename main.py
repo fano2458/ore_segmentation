@@ -9,6 +9,7 @@ from albumentations.pytorch import ToTensorV2
 from sklearn.metrics import f1_score
 from tqdm import tqdm
 
+import wandb
 from src.dataset import RockDataset
 
 torch.set_float32_matmul_precision("high")
@@ -17,7 +18,8 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 num_epochs = 100
 print(f"Using device: {device}")
 
-encoder_name = "efficientnet-b0"
+# encoder_name = "efficientnet-b0"
+encoder_name = "mobilenet_v2"
 
 train_transform = A.Compose(
     [
@@ -30,7 +32,7 @@ train_transform = A.Compose(
         ),
         A.HorizontalFlip(p=0.5),
         A.RandomBrightnessContrast(p=0.2),
-        A.RandomCrop(height=256, width=256, p=0.5),
+        A.RandomCrop(height=512, width=512, p=0.5),
         A.Affine(translate_percent=0.05, scale=(0.95, 1.05), rotate=(-15, 15), p=0.5),
         A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ToTensorV2(),
@@ -110,6 +112,29 @@ os.makedirs(os.path.dirname(save_path), exist_ok=True)
 patience = 5  # Early stopping patience
 no_improvement_epochs = 0  # Counter for epochs without improvement
 
+wandb.init(project="ore_segmentation", name=f"unet_{encoder_name}")
+
+# Log model configuration
+wandb.config.update(
+    {
+        "encoder_name": encoder_name,
+        "num_epochs": num_epochs,
+        "batch_size": train_loader.batch_size,
+        "learning_rate": 1e-4,
+        "patience": patience,
+    }
+)
+
+
+def denormalize_image(image):
+    """Denormalize image for visualization."""
+    mean = (0.485, 0.456, 0.406)
+    std = (0.229, 0.224, 0.225)
+    image = image.cpu().numpy().transpose(1, 2, 0)
+    image = (image * std + mean) * 255.0
+    return image.clip(0, 255).astype("uint8")
+
+
 for epoch in range(num_epochs):
     model.train()
     train_loss = 0.0
@@ -141,8 +166,14 @@ for epoch in range(num_epochs):
     model.eval()
     val_loss = 0.0
     val_f1 = 0.0
+    val_accuracy = 0.0
+    val_precision = 0.0
+    val_recall = 0.0
+    predictions_to_log = []  # Store predictions for logging
     with torch.no_grad():
-        for images, masks in tqdm(val_loader, desc="Validation", total=len(val_loader)):
+        for idx, (images, masks) in enumerate(
+            tqdm(val_loader, desc="Validation", total=len(val_loader))
+        ):
             images = images.to(device)
             masks = masks.to(device).float()
 
@@ -151,10 +182,46 @@ for epoch in range(num_epochs):
             val_loss += loss.item() * images.size(0)
 
             preds = outputs.squeeze(1) > 0.5
-            preds = preds.cpu().numpy().flatten()
-            masks = masks.cpu().numpy().flatten()
-            f1 = f1_score(masks, preds, average="binary", zero_division=0)
+            preds_np = preds.cpu().numpy()
+            masks_np = masks.cpu().numpy()
+
+            f1 = f1_score(
+                masks_np.flatten(),
+                preds_np.flatten(),
+                average="binary",
+                zero_division=0,
+            )
             val_f1 += f1 * images.size(0)
+
+            # Calculate additional metrics
+            tp = ((preds_np == 1) & (masks_np == 1)).sum()
+            tn = ((preds_np == 0) & (masks_np == 0)).sum()
+            fp = ((preds_np == 1) & (masks_np == 0)).sum()
+            fn = ((preds_np == 0) & (masks_np == 1)).sum()
+
+            accuracy = (tp + tn) / (tp + tn + fp + fn)
+            precision = tp / (tp + fp) if (tp + fp) > 0 else 0
+            recall = tp / (tp + fn) if (tp + fn) > 0 else 0
+
+            val_accuracy += accuracy * images.size(0)
+            val_precision += precision * images.size(0)
+            val_recall += recall * images.size(0)
+
+            # Save predictions for logging every epoch
+            if len(predictions_to_log) < 3:
+                denormalized_image = denormalize_image(images[0])
+                original_mask = masks[0].cpu().numpy()
+                predicted_mask = preds[0].cpu().numpy()
+                predictions_to_log.append(
+                    wandb.Image(
+                        denormalized_image,
+                        masks={
+                            "ground_truth": {"mask_data": original_mask},
+                            "prediction": {"mask_data": predicted_mask},
+                        },
+                        caption="Original Image, Ground Truth Mask, Predicted Mask",
+                    )
+                )
 
             del images, masks, outputs, loss, preds
             gc.collect()
@@ -162,10 +229,30 @@ for epoch in range(num_epochs):
 
     val_loss /= len(val_loader.dataset)
     val_f1 /= len(val_loader.dataset)
+    val_accuracy /= len(val_loader.dataset)
+    val_precision /= len(val_loader.dataset)
+    val_recall /= len(val_loader.dataset)
 
     print(
-        f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, Val F1: {val_f1:.4f}"
+        f"Epoch {epoch+1}/{num_epochs}, Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, "
+        f"Val F1: {val_f1:.4f}, Val Accuracy: {val_accuracy:.4f}, Val Precision: {val_precision:.4f}, Val Recall: {val_recall:.4f}"
     )
+
+    # Log metrics to wandb
+    wandb.log(
+        {
+            "epoch": epoch + 1,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "val_f1": val_f1,
+            "val_accuracy": val_accuracy,
+            "val_precision": val_precision,
+            "val_recall": val_recall,
+        }
+    )
+
+    # Log predictions every epoch
+    wandb.log({"predictions": predictions_to_log})
 
     if val_f1 > best_val_f1:
         best_val_f1 = val_f1
@@ -182,3 +269,5 @@ for epoch in range(num_epochs):
 
     gc.collect()
     torch.cuda.empty_cache()
+
+wandb.finish()

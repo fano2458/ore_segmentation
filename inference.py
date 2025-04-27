@@ -1,4 +1,5 @@
 import os
+import time
 
 import albumentations as A
 import cv2
@@ -63,10 +64,14 @@ with torch.no_grad():
         image, mask = val_dataset[i]
         image_tensor = image.unsqueeze(0).to(device)
 
+        start_time = time.time()
         output = model(image_tensor)
         pred_mask = (output.squeeze(0).squeeze(0).cpu().numpy() > 0.5).astype(
             np.uint8
         ) * 255
+        torch.cuda.synchronize()
+        end_time = time.time()
+        print(f"Inference time for image {i + 1}: {end_time - start_time:.4f} seconds")
 
         original_image = image.permute(1, 2, 0).cpu().numpy()
         original_image = (original_image * std + mean) * 255  # Denormalize
