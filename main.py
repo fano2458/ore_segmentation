@@ -18,8 +18,11 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 num_epochs = 100
 print(f"Using device: {device}")
 
-# encoder_name = "efficientnet-b0"
-encoder_name = "mobilenet_v2"
+encoder_name = "efficientnet-b0"
+# encoder_name = "mobilenet_v2"
+# encoder_name = "mobileone_s0"
+# encoder_name = "mit_b0"
+# encoder_name = "resnet18"
 
 train_transform = A.Compose(
     [
@@ -83,8 +86,8 @@ val_loader = torch.utils.data.DataLoader(
     num_workers=4,
 )
 
-model = smp.Unet(
-    encoder_name="efficientnet-b0",
+model = smp.UnetPlusPlus(
+    encoder_name=encoder_name,
     encoder_weights="imagenet",
     in_channels=3,
     classes=1,
@@ -104,7 +107,7 @@ scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
 
 model.to(device)
 
-accumulation_steps = 8
+accumulation_steps = 16
 best_val_f1 = 0.0
 save_path = f"weights/Unet_{encoder_name}.pth"
 os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -112,7 +115,7 @@ os.makedirs(os.path.dirname(save_path), exist_ok=True)
 patience = 5  # Early stopping patience
 no_improvement_epochs = 0  # Counter for epochs without improvement
 
-wandb.init(project="ore_segmentation", name=f"unet_{encoder_name}")
+wandb.init(project="ore_segmentation", name=f"unet++_{encoder_name}")
 
 # Log model configuration
 wandb.config.update(
