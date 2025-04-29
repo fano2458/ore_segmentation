@@ -37,24 +37,27 @@ def main(args):
     val_mask_dir = os.path.join(base_dir, "valid", "masks")
 
     if args.model == "unet":
+        encoder_name = args.encoder_name if args.encoder_name else "mobilenet_v2"
         model = smp.Unet(
-            encoder_name="mobilenet_v2",
+            encoder_name=encoder_name,
             encoder_weights="imagenet",
             in_channels=3,
             classes=1,
             activation="sigmoid",
         )
     elif args.model == "unetplusplus":
+        encoder_name = args.encoder_name if args.encoder_name else "efficientnet-b4"
         model = smp.UnetPlusPlus(
-            encoder_name="efficientnet-b4",
+            encoder_name=encoder_name,
             encoder_weights="imagenet",
             in_channels=3,
             classes=1,
             activation="sigmoid",
         )
     elif args.model == "deeplabv3plus":
+        encoder_name = args.encoder_name if args.encoder_name else "mit_b5"
         model = smp.DeepLabV3Plus(
-            encoder_name="mit_b5",
+            encoder_name=encoder_name,
             encoder_weights="imagenet",
             in_channels=3,
             classes=1,
@@ -73,16 +76,14 @@ def main(args):
                 min_height=1088,
                 min_width=1920,
                 border_mode=cv2.BORDER_CONSTANT,
-                value=0,
-                mask_value=0,
             ),
             A.HorizontalFlip(p=0.5),
             A.RandomBrightnessContrast(p=0.3),
             A.OneOf(
                 [
-                    A.ElasticTransform(alpha=1, sigma=50, alpha_affine=30, p=0.3),
+                    A.ElasticTransform(alpha=1, sigma=50, p=0.3),
                     A.GridDistortion(num_steps=5, distort_limit=0.3, p=0.3),
-                    A.OpticalDistortion(distort_limit=0.5, shift_limit=0.5, p=0.3),
+                    A.OpticalDistortion(distort_limit=0.5, p=0.3),
                 ],
                 p=0.3,
             ),
@@ -94,18 +95,18 @@ def main(args):
                 p=0.5,
             ),
             A.CoarseDropout(
-                max_holes=8,
-                max_height=32,
-                max_width=32,
-                fill_value=0,
-                mask_fill_value=0,
+                num_holes_range=(1, 8),
+                hole_height_range=(8, 32),
+                hole_width_range=(8, 32),
                 p=0.3,
             ),
             A.OneOf(
-                A.RandomCrop(height=512, width=512, p=1.0),
-                A.RandomResizedCrop(
-                    height=512, width=512, scale=(0.5, 1.0), ratio=(0.75, 1.33), p=1.0
-                ),
+                [
+                    A.RandomCrop(height=512, width=512, p=1.0),
+                    A.RandomResizedCrop(
+                        size=(512, 512), scale=(0.5, 1.0), ratio=(0.75, 1.33), p=1.0
+                    ),
+                ],
                 p=0.5,
             ),
             A.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
@@ -177,16 +178,15 @@ def main(args):
     best_val_f1 = 0.0
     no_improvement_epochs = 0
 
-    # Ensure weights directory exists
     weights_dir = "weights"
     os.makedirs(weights_dir, exist_ok=True)
 
-    wandb.init(project="ore_segmentation", name=f"{args.model}_{args.encoder_name}")
+    wandb.init(project="ore_segmentation_v1", name=f"{args.model}_{encoder_name}")
 
     wandb.config.update(
         {
             "model": args.model,
-            "encoder_name": args.encoder_name,
+            "encoder_name": encoder_name,
             "num_epochs": args.num_epochs,
             "batch_size": args.batch_size,
             "learning_rate": args.learning_rate,
@@ -207,7 +207,6 @@ def main(args):
             images = images.to(device)
             masks = masks.to(device).float()
 
-            # Use autocast only for CUDA devices
             if device == "cuda":
                 with torch.autocast(device_type=device, dtype=torch.bfloat16):
                     outputs = model(images)
@@ -229,10 +228,6 @@ def main(args):
                 loss_dice.item() * images.size(0) * args.accumulation_steps
             )
             train_loss += loss.item() * images.size(0) * args.accumulation_steps
-
-            del images, masks, outputs, loss, loss_bce, loss_dice
-            gc.collect()
-            # torch.cuda.empty_cache()
 
         train_bce_loss /= len(train_loader.dataset)
         train_dice_loss /= len(train_loader.dataset)
@@ -308,10 +303,6 @@ def main(args):
                         )
                     )
 
-                del images, masks, outputs, preds
-                gc.collect()
-                # torch.cuda.empty_cache()
-
         val_loss /= len(val_loader.dataset)
         val_bce_loss /= len(val_loader.dataset)
         val_dice_loss /= len(val_loader.dataset)
@@ -339,7 +330,8 @@ def main(args):
                 "val_accuracy": val_accuracy,
                 "val_precision": val_precision,
                 "val_recall": val_recall,
-                "learning_rate": optimizer.param_groups[0]["lr"],  # Log learning rate
+                "learning_rate": optimizer.param_groups[0]["lr"],
+                "predictions": predictions_to_log,
             }
         )
 
