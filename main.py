@@ -201,6 +201,7 @@ def main(args):
         model.train()
         train_loss = 0.0
         optimizer.zero_grad()
+        train_images_to_log = []  # Store training images and masks for logging
         for i, (images, masks) in tqdm(
             enumerate(train_loader), desc="Training", total=len(train_loader)
         ):
@@ -228,6 +229,20 @@ def main(args):
                 loss_dice.item() * images.size(0) * args.accumulation_steps
             )
             train_loss += loss.item() * images.size(0) * args.accumulation_steps
+
+            # Save images and masks for logging every epoch
+            if len(train_images_to_log) < 3:
+                denormalized_image = denormalize_image(images[0])
+                original_mask = masks[0].cpu().numpy()
+                train_images_to_log.append(
+                    wandb.Image(
+                        denormalized_image,
+                        masks={
+                            "ground_truth": {"mask_data": original_mask},
+                        },
+                        caption="Original Image and Ground Truth Mask",
+                    )
+                )
 
         train_bce_loss /= len(train_loader.dataset)
         train_dice_loss /= len(train_loader.dataset)
@@ -259,7 +274,7 @@ def main(args):
                 val_bce_loss += val_loss_bce.item() * images.size(0)
                 val_dice_loss += val_loss_dice.item() * images.size(0)
 
-                preds = outputs.squeeze(1) > 0.5
+                preds = outputs.squeeze(1) >= 0.5
                 preds_np = preds.cpu().numpy()
                 masks_np = masks.cpu().numpy()
 
@@ -331,6 +346,7 @@ def main(args):
                 "val_precision": val_precision,
                 "val_recall": val_recall,
                 "learning_rate": optimizer.param_groups[0]["lr"],
+                "train_images": train_images_to_log,
                 "predictions": predictions_to_log,
             }
         )
@@ -338,12 +354,18 @@ def main(args):
         # Save top-3 models based on F1 score
         if len(top_models) < 3 or val_f1 > min(top_models, key=lambda x: x[0])[0]:
             model_path = os.path.join(
-                weights_dir, f"{args.model}_{args.encoder_name}_valf1_{val_f1:.4f}.pth"
+                weights_dir, f"{args.model}_{encoder_name}_valf1_{val_f1:.4f}.pth"
             )
             torch.save(model.state_dict(), model_path)
             top_models.append((val_f1, model_path))
             top_models = sorted(top_models, key=lambda x: x[0], reverse=True)[:3]
             print(f"Saved model with Val F1: {val_f1:.4f}")
+
+            # Remove models that are no longer in the top-3
+            for _, path in top_models[3:]:
+                if os.path.exists(path):
+                    os.remove(path)
+                    print(f"Removed model: {path}")
 
         # Early stopping logic
         if val_f1 > best_val_f1:
@@ -376,7 +398,7 @@ def main(args):
         for k in averaged_weights:
             averaged_weights[k] /= len(top_models)
         averaged_model_path = os.path.join(
-            weights_dir, f"{args.model}_{args.encoder_name}_averaged.pth"
+            weights_dir, f"{args.model}_{encoder_name}_averaged.pth"
         )
         torch.save(averaged_weights, averaged_model_path)
         print(f"Saved averaged model weights to {averaged_model_path}.")
